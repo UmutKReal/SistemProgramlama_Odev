@@ -1,0 +1,2 @@
+# SistemProgramlama_Odev
+odev
