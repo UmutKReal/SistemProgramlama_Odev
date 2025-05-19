@@ -12,19 +12,55 @@ static FileEntry file_table[MAX_FILES];
 
 static int load_metadata() {
     int fd = open(DISK_FILE, O_RDWR);
-    if (fd < 0) return -1;
-    lseek(fd, 0, SEEK_SET);
-    read(fd, file_table, sizeof(file_table));
+    if (fd < 0) {
+        perror("[DEBUG] load_metadata: Disk dosyası açılamadı");
+        return -1;
+    }
+    
+    off_t seek_result = lseek(fd, 0, SEEK_SET);
+    if (seek_result == -1) {
+        perror("[DEBUG] load_metadata: lseek hatası");
+        close(fd);
+        return -1;
+    }
+    
+    ssize_t bytes_read = read(fd, file_table, sizeof(file_table));
+    if (bytes_read != sizeof(file_table)) {
+        printf("[DEBUG] load_metadata: Metadata tam okunamadı. İstenen: %ld, Okunan: %ld\n", 
+               (long)sizeof(file_table), (long)bytes_read);
+        close(fd);
+        return -1;
+    }
+    
     close(fd);
+    printf("[DEBUG] load_metadata: Metadata başarıyla yüklendi (%ld byte)\n", (long)bytes_read);
     return 0;
 }
 
 static int save_metadata() {
     int fd = open(DISK_FILE, O_RDWR);
-    if (fd < 0) return -1;
-    lseek(fd, 0, SEEK_SET);
-    write(fd, file_table, sizeof(file_table));
+    if (fd < 0) {
+        perror("[DEBUG] save_metadata: Disk dosyası açılamadı");
+        return -1;
+    }
+    
+    off_t seek_result = lseek(fd, 0, SEEK_SET);
+    if (seek_result == -1) {
+        perror("[DEBUG] save_metadata: lseek hatası");
+        close(fd);
+        return -1;
+    }
+    
+    ssize_t bytes_written = write(fd, file_table, sizeof(file_table));
+    if (bytes_written != sizeof(file_table)) {
+        printf("[DEBUG] save_metadata: Metadata tam yazılamadı. İstenen: %ld, Yazılan: %ld\n", 
+               (long)sizeof(file_table), (long)bytes_written);
+        close(fd);
+        return -1;
+    }
+    
     close(fd);
+    printf("[DEBUG] save_metadata: Metadata başarıyla kaydedildi (%ld byte)\n", (long)bytes_written);
     return 0;
 }
 
@@ -35,22 +71,33 @@ void fs_format() {
     write(fd, file_table, sizeof(file_table));
     close(fd);
 }
-
+//ddosya oluştur yeni
 int fs_create(const char* filename) {
     load_metadata();
+    printf("[DEBUG] fs_create: Dosya adı: %s\n", filename);
+    
     for (int i = 0; i < MAX_FILES; i++) {
-        if (file_table[i].used && strcmp(file_table[i].name, filename) == 0)
+        if (file_table[i].used && strcmp(file_table[i].name, filename) == 0) {
+            printf("[DEBUG] Dosya zaten var: i=%d\n", i);
             return -1; // Zaten var
+        }
+        
         if (!file_table[i].used) {
             strncpy(file_table[i].name, filename, MAX_FILENAME);
             file_table[i].size = 0;
-            file_table[i].start_block = i * BLOCK_SIZE + DATA_START;
+            file_table[i].start_block = i; // Sadece blok numarası
             file_table[i].created_at = time(NULL);
             file_table[i].used = 1;
+            
+            printf("[DEBUG] Dosya oluşturuldu: i=%d, başlangıç blok=%d\n", 
+                   i, file_table[i].start_block);
+            
             save_metadata();
             return 0;
         }
     }
+    
+    printf("[DEBUG] Yer yok: Maksimum dosya sayısına ulaşıldı\n");
     return -1; // Yer yok
 }
 
@@ -65,46 +112,174 @@ int fs_delete(const char* filename) {
     }
     return -1;
 }
-
+// Dosyaya veri yaz yeni
 int fs_write(const char* filename, const char* data, int size) {
     load_metadata();
+    printf("[DEBUG] fs_write: Dosya: %s, Veri boyutu: %d\n", filename, size);
+    
+    // Kaydedilecek veriyi hex olarak göster
+    printf("[DEBUG] Yazılacak veri (hex): ");
+    for (int i = 0; i < size; i++) {
+        printf("%02X ", (unsigned char)data[i]);
+    }
+    printf("\n");
+    
     int fd = open(DISK_FILE, O_RDWR);
+    if (fd < 0) {
+        perror("Disk dosyası açılamadı");
+        return -1;
+    }
+
     for (int i = 0; i < MAX_FILES; i++) {
         if (file_table[i].used && strcmp(file_table[i].name, filename) == 0) {
-            lseek(fd, file_table[i].start_block, SEEK_SET);
-            write(fd, data, size);
+            // Dosya başlangıç pozisyonunu hesapla
+            int file_position = DATA_START + file_table[i].start_block * BLOCK_SIZE;
+            printf("[DEBUG] Dosya bulundu: i=%d, başlangıç blok=%d, hesaplanan konum=%d\n", 
+                   i, file_table[i].start_block, file_position);
+            
+            off_t seek_result = lseek(fd, file_position, SEEK_SET);
+            if (seek_result == -1) {
+                perror("lseek hatası");
+                close(fd);
+                return -1;
+            }
+            printf("[DEBUG] lseek başarılı: konum=%ld\n", (long)seek_result);
+
+            // Yazma işlemi sonrasında veriyi doğrula
+            int written = write(fd, data, size);
+            if (written != size) {
+                printf("[DEBUG] Yazma hatası: istenen=%d, yazılan=%d\n", size, written);
+                perror("write hatası");
+                close(fd);
+                return -1;
+            }
+            printf("[DEBUG] Yazma başarılı: %d byte yazıldı\n", written);
+            
+            // Yazılan veriyi kontrol etmek için tekrar oku
+            char* verify_buffer = malloc(size);
+            if (verify_buffer != NULL) {
+                lseek(fd, file_position, SEEK_SET);
+                int read_check = read(fd, verify_buffer, size);
+                printf("[DEBUG] Yazma doğrulama: %d byte okundu\n", read_check);
+                
+                printf("[DEBUG] Doğrulama verisi (hex): ");
+                for (int j = 0; j < read_check; j++) {
+                    printf("%02X ", (unsigned char)verify_buffer[j]);
+                }
+                printf("\n");
+                
+                free(verify_buffer);
+            }
+
             file_table[i].size = size;
             save_metadata();
             close(fd);
-            return 0;
+            return written;
         }
     }
+
+    printf("[DEBUG] Dosya bulunamadı: %s\n", filename);
     close(fd);
     return -1;
 }
-
+// Dosyadan veri oku yeni
 int fs_read(const char* filename, int offset, int size, char* buffer) {
     load_metadata();
+    printf("[DEBUG] fs_read: Dosya: %s, Offset: %d, Boyut: %d\n", filename, offset, size);
+    
     int fd = open(DISK_FILE, O_RDONLY);
+    if (fd < 0) {
+        perror("Disk dosyası açılamadı");
+        return -1;
+    }
+
     for (int i = 0; i < MAX_FILES; i++) {
         if (file_table[i].used && strcmp(file_table[i].name, filename) == 0) {
-            if (offset + size > file_table[i].size) return -1;
-            lseek(fd, file_table[i].start_block + offset, SEEK_SET);
-            read(fd, buffer, size);
+            printf("[DEBUG] Dosya bulundu: i=%d, boyut=%d, başlangıç blok=%d\n", 
+                   i, file_table[i].size, file_table[i].start_block);
+            
+            if (offset < 0 || size < 0 || offset + size > file_table[i].size) {
+                printf("[DEBUG] Hata: Geçersiz offset veya boyut. offset=%d, size=%d, dosya boyutu=%d\n", 
+                       offset, size, file_table[i].size);
+                close(fd);
+                return -1;
+            }
+
+            // İlk olarak buffer'ı benzersiz bir değerle dolduralım
+            memset(buffer, '_', size);
+            
+            // Dosya başlangıç pozisyonunu ve okuma konumunu hesapla
+            int file_position = DATA_START + file_table[i].start_block * BLOCK_SIZE + offset;
+            printf("[DEBUG] Dosya konumu hesaplandı: DATA_START=%d, BLOCK_SIZE=%d, file_position=%d\n", 
+                   DATA_START, BLOCK_SIZE, file_position);
+            
+            // Dosya konumuna git
+            off_t seek_result = lseek(fd, file_position, SEEK_SET);
+            if (seek_result == -1) {
+                perror("lseek hatası");
+                close(fd);
+                return -1;
+            }
+            printf("[DEBUG] lseek başarılı: konum=%ld\n", (long)seek_result);
+
+            // Veriyi oku
+            int bytes_read = read(fd, buffer, size);
+            if (bytes_read != size) {
+                printf("[DEBUG] Okuma hatası: istenen=%d, okunan=%d\n", size, bytes_read);
+                perror("read hatası");
+                close(fd);
+                return -1;
+            }
+            
+            printf("[DEBUG] Okuma başarılı: %d byte okundu\n", bytes_read);
+            
+            // Okunan veriyi hex olarak göster
+            printf("[DEBUG] Okunan veri (hex): ");
+            for (int j = 0; j < bytes_read; j++) {
+                printf("%02X ", (unsigned char)buffer[j]);
+            }
+            printf("\n");
+
             close(fd);
             return 0;
         }
     }
+
+    printf("[DEBUG] Dosya bulunamadı: %s\n", filename);
     close(fd);
     return -1;
 }
 
 void fs_ls() {
     load_metadata();
+    printf("\n=== Dosya Listesi ===\n");
+    printf("%-20s %-10s %-20s\n", "Dosya Adı", "Boyut", "Oluşturma Zamanı");
+    printf("-----------------------------------------------------\n");
+    
+    int sayac = 0;
     for (int i = 0; i < MAX_FILES; i++) {
         if (file_table[i].used) {
-            printf("%s\t%d bytes\n", file_table[i].name, file_table[i].size);
+            char zaman[30];
+            struct tm* timeinfo = localtime(&file_table[i].created_at);
+            strftime(zaman, sizeof(zaman), "%Y-%m-%d %H:%M:%S", timeinfo);
+            
+            // Dosya adını hex olarak da göster (özellikle boşluk vb. karakterler için)
+            printf("%-20s %-10d %-20s", file_table[i].name, file_table[i].size, zaman);
+            
+            printf(" [hex: ");
+            for (int j = 0; j < strlen(file_table[i].name); j++) {
+                printf("%02X ", (unsigned char)file_table[i].name[j]);
+            }
+            printf("]\n");
+            
+            sayac++;
         }
+    }
+    
+    if (sayac == 0) {
+        printf("Hiç dosya bulunamadı.\n");
+    } else {
+        printf("\nToplam %d dosya listelendi.\n", sayac);
     }
 }
 
